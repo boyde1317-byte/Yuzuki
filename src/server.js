@@ -1,7 +1,12 @@
 import http from "http";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { pushToGitHub } from "./utils/github.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
+const ZIP_PATH = path.join(__dirname, "../../tasks/Yuzuki-slim.zip");
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost`);
@@ -9,6 +14,22 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ status: "ok", uptime: process.uptime() }));
+  }
+
+  if (url.pathname === "/download" || url.pathname === "/download/") {
+    try {
+      const stat = fs.statSync(ZIP_PATH);
+      res.writeHead(200, {
+        "Content-Type": "application/zip",
+        "Content-Disposition": "attachment; filename=\"Yuzuki-slim.zip\"",
+        "Content-Length": stat.size,
+      });
+      fs.createReadStream(ZIP_PATH).pipe(res);
+    } catch {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("❌ File not found");
+    }
+    return;
   }
 
   if (url.pathname === "/push" && req.method === "POST") {

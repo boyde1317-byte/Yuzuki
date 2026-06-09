@@ -6,8 +6,8 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
 
-const OWNER  = "KyokaAizen665";
-const REPO   = "Yuzuki-Md-V2";
+const OWNER  = "boyde1317-byte";
+const REPO   = "Yuzuki";
 const BRANCH = "main";
 
 // Directories / files to never push
@@ -17,13 +17,13 @@ const EXCLUDE = new Set([
   ".local", ".agents", ".replit", "attached_assets",
 ]);
 
-function ghClient() {
-  const token = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-  if (!token) throw new Error("GITHUB_PERSONAL_ACCESS_TOKEN env var is not set");
+function ghClient(token) {
+  const tok = token || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+  if (!tok) throw new Error("GitHub token required: pass as argument or set GITHUB_PERSONAL_ACCESS_TOKEN env var");
   return axios.create({
     baseURL: "https://api.github.com",
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${tok}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
     },
@@ -211,3 +211,93 @@ export async function pushToGitHub(commitMessage = "Update from Yuzuki MD") {
     filesCount: files.length,
   };
 }
+
+/**
+ * Safe merge push — uploads local files but PRESERVES everything already on GitHub
+ * that isn't locally modified. Ideal for pushing source changes without wiping media.
+ * @param {string} commitMessage
+ * @param {string} [token] GitHub PAT (optional, falls back to env)
+ * @returns {{ commitSha: string, url: string, filesCount: number, preserved: number }}
+ */
+export async function pushToGitHubSafe(commitMessage = "Safe update", token) {
+  const gh = ghClient(token);
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // 1 ── Get HEAD commit & tree
+  const { data: refData } = await gh.get(`/repos/${OWNER}/${REPO}/git/refs/heads/${BRANCH}`);
+  const headSha = refData.object.sha;
+
+  const { data: headCommit } = await gh.get(`/repos/${OWNER}/${REPO}/git/commits/${headSha}`);
+  const baseTreeSha = headCommit.tree.sha;
+
+  // 2 ── Fetch existing tree from GitHub (recursive)
+  const { data: treeData } = await gh.get(
+    `/repos/${OWNER}/${REPO}/git/trees/${baseTreeSha}?recursive=1`
+  );
+  const existingMap = new Map();
+  for (const item of treeData.tree) {
+    if (item.type === "blob") existingMap.set(item.path, item);
+  }
+
+  // 3 ── Collect local files (same exclusions, but also skip binary media extensions)
+  const SKIP_MEDIA = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp3", ".mp4", ".ttf", ".otf", ".woff", ".woff2"]);
+  const localFiles = collectFiles(ROOT).filter(({ rel }) => {
+    const ext = path.extname(rel).toLowerCase();
+    return !SKIP_MEDIA.has(ext);
+  });
+
+  // 4 ── Create blobs & update map (merge local changes into existing tree)
+  const BATCH = 4;
+  for (let i = 0; i < localFiles.length; i += BATCH) {
+    const batch = localFiles.slice(i, i + BATCH);
+    await Promise.all(batch.map(async ({ full, rel }) => {
+      const buf     = fs.readFileSync(full);
+      const binary  = isBinary(buf);
+      const content = buf.toString(binary ? "base64" : "utf-8");
+      const { data } = await gh.post(`/repos/${OWNER}/${REPO}/git/blobs`, {
+        content,
+        encoding: binary ? "base64" : "utf-8",
+      });
+      existingMap.set(rel, { path: rel, mode: "100644", type: "blob", sha: data.sha });
+    }));
+    if (i + BATCH < localFiles.length) await sleep(300);
+  }
+
+  const preserved = treeData.tree.length - localFiles.length;
+
+  // 5 ── Create new tree from merged map (preserves all untouched GitHub files)
+  const treeItems = Array.from(existingMap.values()).map(({ path: p, mode, type, sha }) => ({
+    path: p, mode, type, sha,
+  }));
+
+  const { data: newTree } = await gh.post(
+    `/repos/${OWNER}/${REPO}/git/trees`,
+    { base_tree: baseTreeSha, tree: treeItems }
+  );
+
+  // 6 ── Create commit
+  const { data: newCommit } = await gh.post(`/repos/${OWNER}/${REPO}/git/commits`, {
+    message: commitMessage,
+    tree:    newTree.sha,
+    parents: [headSha],
+    author: {
+      name:  "Yuzuki Bot",
+      email: "bot@yuzuki.md",
+      date:  new Date().toISOString(),
+    },
+  });
+
+  // 7 ── Advance branch ref
+  await gh.patch(`/repos/${OWNER}/${REPO}/git/refs/heads/${BRANCH}`, {
+    sha: newCommit.sha,
+    force: false,
+  });
+
+  return {
+    commitSha:  newCommit.sha,
+    url:        `https://github.com/${OWNER}/${REPO}/commit/${newCommit.sha}`,
+    filesCount: localFiles.length,
+    preserved:  Math.max(0, preserved),
+  };
+}
+

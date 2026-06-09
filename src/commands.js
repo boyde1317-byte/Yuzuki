@@ -38,14 +38,13 @@ import { sendContact, sendMultiContact, sendFakeContact, createFakeQuoted, sendW
 // Free AI — no API keys required (Pollinations.AI + StreamElements + Groq)
 import QRCode from "qrcode";
 import ytdl from "@distube/ytdl-core";
-import { createRequire } from "module";
-const _require = createRequire(import.meta.url);
+import baileys from "@whiskeysockets/baileys";
 const {
   downloadMediaMessage,
   generateWAMessageFromContent,
   prepareWAMessageMedia,
   proto,
-} = _require("socketon");
+} = baileys;
 // ── . merged scrapers & libs ──────────────────────────────────────────
 import { tiktokDl } from "./lib/scrape/tiktok.js";
 import { igdl as igDl } from "./lib/scrape/instagram.js";
@@ -121,14 +120,17 @@ function bjVal(h){let v=0,a=0;for(const c of h){const r=c.slice(0,-1);if(r==="A"
   const startTime = Date.now();
 
 // ── Per-command thumbnail helper ──────────────────────────────────────────────
-// Looks for src/assets/<name>.(jpg|png|jpeg|webp). Falls back to menu_bg.jpg.
+// Looks for src/assets/<name>.(jpg|png|jpeg|webp).
+// Falls back to menu_bg.jpg if present, otherwise returns the remote URL string.
+const FALLBACK_THUMB_URL = "https://www.upload.ee/image/19419994/file.jpg";
 function getThumb(name) {
   const dir = path.dirname(MENU_BG);
   for (const ext of ["jpg", "png", "jpeg", "webp"]) {
     const p = path.join(dir, `${name}.${ext}`);
     if (fs.existsSync(p)) return fs.readFileSync(p);
   }
-  return fs.readFileSync(MENU_BG);
+  if (fs.existsSync(MENU_BG)) return fs.readFileSync(MENU_BG);
+  return null; // signal to caller to use FALLBACK_THUMB_URL
 }
 
 const OWNER_COMMANDS = new Set([
@@ -193,11 +195,16 @@ export async function handleCommand({ sock, msg, command, args }) {
   };
 
   // replyWithThumb: send an image from src/assets/<thumbName>.(jpg|png…) with
-  // the caption as the message body. Falls back to plain text on error.
+  // the caption as the message body. Falls back to the remote URL if no local
+  // file exists, and falls back to plain text if the remote fetch also fails.
   const replyWithThumb = async (thumbName, caption) => {
     try {
       const thumb = getThumb(thumbName);
-      await sock.sendMessage(jid, { image: thumb, caption }, { quoted: channelQuote || msg });
+      if (thumb) {
+        await sock.sendMessage(jid, { image: thumb, caption }, { quoted: channelQuote || msg });
+      } else {
+        await sock.sendMessage(jid, { image: { url: FALLBACK_THUMB_URL }, caption }, { quoted: channelQuote || msg });
+      }
     } catch {
       await replyChannel(caption);
     }
@@ -425,15 +432,23 @@ export async function handleCommand({ sock, msg, command, args }) {
           `\n\n┈┈┈┈୨♡୧┈┈┈┈\n` +
           `✨ *${totalCmds} commands total* — Use *${prefix}menu <category>* for details.`;
 
-        // Local asset image (falls back to remote menuBgUrl if set)
+        // Local asset image — priority: menuBgUrl setting → local menu_bg.jpg → remote fallback URL
         let imgBuf;
-        if (settings.menuBgUrl) {
-          try {
+        try {
+          if (settings.menuBgUrl) {
             const r = await fetch(settings.menuBgUrl);
             imgBuf = Buffer.from(await r.arrayBuffer());
-          } catch { imgBuf = fs.readFileSync(MENU_BG); }
-        } else {
-          imgBuf = fs.readFileSync(MENU_BG);
+          } else if (fs.existsSync(MENU_BG)) {
+            imgBuf = fs.readFileSync(MENU_BG);
+          } else {
+            const r = await fetch(FALLBACK_THUMB_URL);
+            imgBuf = Buffer.from(await r.arrayBuffer());
+          }
+        } catch {
+          try {
+            const r = await fetch(FALLBACK_THUMB_URL);
+            imgBuf = Buffer.from(await r.arrayBuffer());
+          } catch { imgBuf = null; }
         }
 
         const vq = getVerifiedQuoted(settings);
@@ -492,14 +507,15 @@ export async function handleCommand({ sock, msg, command, args }) {
           );
         } catch {
           // Fallback — plain image with caption, fake contact quote, small externalAdReply
+          const imgSrc = imgBuf ? imgBuf : { url: FALLBACK_THUMB_URL };
           await sock.sendMessage(jid, {
-            image: imgBuf,
+            image: imgSrc,
             caption: fullCaption,
             contextInfo: {
               externalAdReply: {
                 title: botName,
                 body: `${totalCmds} commands available`,
-                thumbnail: imgBuf,
+                thumbnail: imgBuf ?? undefined,
                 mediaType: 1,
                 renderLargerThumbnail: false,
                 sourceUrl: "https://github.com/KyokaAizen665/Yuzuki-Md-V2",
@@ -561,7 +577,7 @@ export async function handleCommand({ sock, msg, command, args }) {
         ["Prefix",   `\`${prefix}\``],
         ["Mode",     (settings.mode ?? "public").toUpperCase()],
         ["Uptime",   uptime0],
-      ], "Yuzuki MD v2 • Powered by focashi");
+      ], "Yuzuki MD v2 • Powered by Baileys");
       const payload0 = await previewCard(text0, {
   title: botName0,
   body: `Online ✅  •  Uptime: ${uptime0}`,
@@ -1362,7 +1378,7 @@ break;
               `A feature-rich WhatsApp bot built with Baileys.\n\n` +
               `🔑 *Prefix:* ${settings.prefix ?? "."}\n` +
               `👑 *Owner:* 233533416608\n` +
-              `📦 *Platform:* Node.js + socketon (focashi fork)`
+              `📦 *Platform:* Node.js + @whiskeysockets/baileys`
           },
           footer: {
             text: "Yuzuki MD"

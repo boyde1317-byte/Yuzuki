@@ -352,7 +352,7 @@ Every user has a profile with: **Level · XP · Money · Bank · Health · Daily
 ## 🗃️ Tech Stack
 
 - **Runtime**: Node.js 20+, ESM (`"type": "module"`)
-- **WhatsApp**: [Baileys](https://github.com/WhiskeySockets/Baileys) via `socketon`
+- **WhatsApp**: [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys)
 - **AI**: OpenAI SDK · Anthropic SDK · Google Generative AI
 - **Media**: `@distube/ytdl-core` · `sharp` · `@napi-rs/canvas` · `fluent-ffmpeg`
 - **Auth**: Pairing code (no QR scan required)

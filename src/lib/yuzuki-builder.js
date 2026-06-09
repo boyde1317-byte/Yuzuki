@@ -11,12 +11,10 @@
  *   - send helpers     → sendInteractive(), sendButtons(), sendList()
  */
 
-import { createRequire } from "module";
-const _require = createRequire(import.meta.url);
-const {
+import {
   generateWAMessageFromContent,
   prepareWAMessageMedia,
-} = _require("socketon");
+} from "@whiskeysockets/baileys";
 import crypto from "crypto";
 import sharp from "sharp";
 
@@ -183,7 +181,7 @@ export class NativeFlowCard {
   }
 }
 
-// ─── ButtonV2 (legacy buttonsMessage) ────────────────────────────────────────
+// ─── ButtonV2 (NativeFlow quick_reply buttons) ────────────────────────────────
 
 export class ButtonV2 {
   #sock;
@@ -200,6 +198,7 @@ export class ButtonV2 {
     this._data = null;
     this._contextInfo = {};
     this._extraPayload = {};
+    this._params = {};
   }
 
   setBody(v) { this._body = v; return this; }
@@ -213,14 +212,16 @@ export class ButtonV2 {
 
   addButton(text, id = crypto.randomUUID()) {
     this._buttons.push({
-      buttonId: id,
-      buttonText: { displayText: text },
-      type: 1,
+      name: "quick_reply",
+      buttonParamsJson: JSON.stringify({
+        display_text: text,
+        id,
+      }),
     });
     return this;
   }
 
-  async build(jid, opts = {}) {
+  async _toCard() {
     let thumb = null;
     if (this._image) {
       const raw = Buffer.isBuffer(this._image)
@@ -229,28 +230,48 @@ export class ButtonV2 {
       if (raw) thumb = await resizeImage(raw, 300, 300).catch(() => null);
     }
 
+    return {
+      header: {
+        title: this._title,
+        subtitle: this._subtitle,
+        hasMediaAttachment: !!this._data,
+        ...(this._data
+          ? await prepareWAMessageMedia(this._data, {
+              upload: this.#sock.waUploadToServer,
+            }).catch((e) => {
+              if (String(e).includes("Invalid media type")) return this._data;
+              throw e;
+            })
+          : thumb
+            ? { jpegThumbnail: thumb, hasMediaAttachment: true }
+            : {}),
+      },
+      body: { text: this._body },
+      footer: { text: this._footer },
+      nativeFlowMessage: {
+        messageParamsJson: JSON.stringify(this._params),
+        buttons: this._buttons,
+      },
+    };
+  }
+
+  async build(jid, opts = {}) {
+    const card = await this._toCard();
     return generateWAMessageFromContent(
       jid,
       {
         ...this._extraPayload,
-        buttonsMessage: {
-          contentText: this._body,
-          footerText: this._footer,
-          ...(this._data
-            ? this._data
-            : {
-                headerType: 6,
-                locationMessage: {
-                  degreesLatitude: 0,
-                  degreesLongitude: 0,
-                  name: this._title,
-                  address: this._subtitle,
-                  jpegThumbnail: thumb,
-                },
-              }),
-          viewOnce: true,
-          contextInfo: this._contextInfo,
-          buttons: [...this._buttons],
+        viewOnceMessage: {
+          message: {
+            messageContextInfo: {
+              deviceListMetadata: {},
+              deviceListMetadataVersion: 2,
+            },
+            interactiveMessage: {
+              ...card,
+              contextInfo: this._contextInfo,
+            },
+          },
         },
       },
       { ...opts }
